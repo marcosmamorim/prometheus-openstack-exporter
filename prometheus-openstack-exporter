@@ -7,6 +7,7 @@ Authors:
   Jacek Nykis <jacek.nykis@canonical.com>
   Laurent Sesques <laurent.sesques@canonical.com>
   Paul Collins <paul.collins@canonical.com>
+  Marcos Amorim <mamorim@redhat.com>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License version 3,
@@ -33,20 +34,16 @@ from threading import Thread
 import pickle
 import requests
 from time import sleep, time
-from neutronclient.v2_0 import client as neutron_client
-# from novaclient.v1_1 import client as nova_client
-# http://docs.openstack.org/developer/python-novaclient/api.html
-from cinderclient.v2 import client as cinder_client
-from novaclient import client as nova_client
 from BaseHTTPServer import BaseHTTPRequestHandler
 from BaseHTTPServer import HTTPServer
 from SocketServer import ForkingMixIn
 from prometheus_client import CollectorRegistry, generate_latest, Gauge, CONTENT_TYPE_LATEST
 from netaddr import IPRange
-
+from openstack import connection
+import openstack.config
 import random
-import swift.common.utils
 
+import swift.common.utils
 from swift.common.ring.ring import Ring
 
 import logging
@@ -55,129 +52,63 @@ import logging.handlers
 config = None
 log = logging.getLogger('poe-logger')
 
+def get_clients(cloud):
+    config = openstack.config.get_cloud_region(cloud=cloud)
+    conn = connection.Connection(config=config)
+    return conn
 
-def get_creds_dict(*names):
-    """Get dictionary with cred envvars"""
-    return {name: env['OS_%s' % name.upper()]
-            for name in names if 'OS_%s' % name.upper() in env}
-
-
-def get_creds_list(*names):
-    """Get list with cred envvars, error if not set"""
-    return [env['OS_%s' % name.upper()] for name in names]
-
-
-def maybe_get_cacert():
-    """Get cacert, None if unset"""
-    return env.get("OS_CACERT")
-
-
-def get_clients():
-    ks_version = int(env.get('OS_IDENTITY_API_VERSION', 2))
-    if ks_version == 2:
-        from keystoneclient.v2_0 import client as keystone_client
-        # Legacy v2 env vars:
-        # OS_USERNAME OS_PASSWORD OS_TENANT_NAME OS_AUTH_URL OS_REGION_NAME
-        ks_creds = get_creds_dict("username", "password", "tenant_name",
-                                  "auth_url", "region_name")
-        cacert = maybe_get_cacert()
-        if cacert:
-            ks_creds["cacert"] = cacert
-        nova_creds = [2] + get_creds_list("username", "password", "tenant_name",
-                                          "auth_url")
-        cinder_creds = get_creds_list("username", "password", "tenant_name",
-                                      "auth_url")
-        keystone = keystone_client.Client(**ks_creds)
-        nova = nova_client.Client(*nova_creds, cacert=cacert)
-        neutron = neutron_client.Client(**ks_creds)
-        cinder = cinder_client.Client(*cinder_creds, cacert=cacert)
-
-    elif ks_version == 3:
-        from keystoneauth1.identity import v3
-        from keystoneauth1 import session
-        from keystoneclient.v3 import client
-        # A little helper for the poor human trying to figure out which env vars
-        # are needed, it worked for me (jjo) having:
-        #  OS_USERNAME OS_PASSWORD OS_USER_DOMAIN_NAME OS_AUTH_URL
-        #  OS_PROJECT_DOMAIN_NAME OS_PROJECT_DOMAIN_ID OS_PROJECT_ID OS_DOMAIN_NAME
-        # Keystone needs domain creds for e.g. project list
-
-        # project and project_domain are needed for listing projects
-        ks_creds_domain = get_creds_dict(
-            "username", "password", "user_domain_name", "auth_url",
-            "project_domain_name", "project_name", "project_domain_id", "project_id")
-        # Need non-domain creds to get full catalog
-        ks_creds_admin = get_creds_dict(
-            "username", "password", "user_domain_name", "auth_url",
-            "project_domain_name", "project_name", "project_domain_id", "project_id")
-        auth_domain = v3.Password(**ks_creds_domain)
-        auth_admin = v3.Password(**ks_creds_admin)
-        # Need to pass in cacert separately
-        verify = maybe_get_cacert()
-        if verify is None:
-            verify = True
-        sess_domain = session.Session(auth=auth_domain, verify=verify)
-        sess_admin = session.Session(auth=auth_admin, verify=verify)
-
-        keystone = client.Client(session=sess_domain)
-        nova = nova_client.Client(2, session=sess_admin)
-        neutron = neutron_client.Client(session=sess_admin)
-        cinder = cinder_client.Client(session=sess_admin)
-
-    else:
-        raise(ValueError("Invalid OS_IDENTITY_API_VERSION=%s" % ks_version))
-    log.debug("Client setup done, keystone ver {}".format(ks_version))
-    return (keystone, nova, neutron, cinder)
-
+def get_clouds():
+    with open(r'clouds.yaml') as file:
+        clouds = yaml.load(file, Loader=yaml.FullLoader)
+    cloud_conn = []
+    for cloud in clouds['clouds']:
+        log.debug("Loading cloud: %s" % cloud)
+        cloud_conn.append(cloud)
+    return cloud_conn
 
 class DataGatherer(Thread):
     """Periodically retrieve data from openstack in a separate thread,
     save as pickle to cache_file
     """
-
-    def __init__(self):
+    # TODO: Create stats with time to get information from OpenStack for each module
+    def __init__(self, cloud):
         Thread.__init__(self)
         self.daemon = True
         self.duration = 0
         self.refresh_interval = config.get('cache_refresh_interval', 900)
-        self.cache_file = config['cache_file']
+        self.cloud = cloud
+        self.cache_file = config['cache_file'] + '-' + self.cloud
         self.use_nova_volumes = config.get('use_nova_volumes', True)
 
-    def _get_keystone_info(self, keystone):
+    def _get_keystone_info(self, conn):
         info = {}
-        try:
-            info['tenants'] = [x._info for x in keystone.tenants.list()]
-        except AttributeError:
-            log.info("Error getting tenants.list, continue with projects.list")
-            info['tenants'] = [x._info for x in keystone.projects.list()]
-            log.debug("Number of projects: %s", len(info['tenants']))
+        info['tenants'] = [dict(x) for x in conn.identity.projects()]
         return info
 
-    def _get_neutron_info(self, neutron):
+    def _get_neutron_info(self, conn):
         info = {}
-        info['floatingips'] = neutron.list_floatingips()['floatingips']
-        info['networks'] = neutron.list_networks()['networks']
-        info['ports'] = neutron.list_ports()['ports']
-        info['routers'] = neutron.list_routers()['routers']
-        info['subnets'] = neutron.list_subnets()['subnets']
+        info['floatingips'] = [dict(ip) for ip in conn.network.ips()]
+        info['networks'] = [dict(network) for network in conn.network.networks()]
+        info['ports'] = [dict(port) for port in conn.network.ports()]
+        info['routers'] = [dict(router) for router in conn.network.routers()]
+        info['subnets'] = [dict(subnet) for subnet in conn.network.subnets()]
         return info
 
-    def _get_nova_info(self, nova, cinder, prodstack):
+    def _get_nova_info(self, conn, prodstack):
         info = {}
-        info['hypervisors'] = [x._info for x in nova.hypervisors.list()]
-        info['services'] = [x._info for x in nova.services.list()]
-        info['flavors'] = [x._info for x in nova.flavors.list(is_public=None)]
-        info['aggregates'] = [x.to_dict() for x in nova.aggregates.list()]
+        info['hypervisors'] = [dict(hypervisor) for hypervisor in conn.list_hypervisors()]
+        info['services'] = [dict(service) for service in conn.compute.services()]
+        info['flavors'] = [dict(flavor) for flavor in conn.list_flavors()]
+        info['aggregates'] = [dict(aggregate) for aggregate in conn.list_aggregates()]
 
         info['instances'] = []
-        # Exclude instances in 'BUILD' state as they cannot be used as markers:
-        #   https://github.com/CanonicalLtd/prometheus-openstack-exporter/issues/90
         valid_statuses = ['ACTIVE', 'ERROR', 'SHELVED_OFFLOADED', 'SHUTOFF', 'SUSPENDED', 'VERIFY_RESIZE']
         for status in valid_statuses:
             marker = ''
             while True:
-                search_opts = {'all_tenants': '1', 'limit': '100', 'marker': marker, 'status': status}
-                new_instances = [x._info for x in nova.servers.list(search_opts=search_opts)]
+                search_opts = {'limit': '100', 'marker': marker, 'status': status}
+                # search_opts = {'status': status}
+                new_instances = [dict(instance) for instance in conn.list_servers(detailed=True, all_projects=True, bare=True, filters=search_opts)]
                 if new_instances:
                     marker = new_instances[-1]['id']
                     info['instances'].extend(new_instances)
@@ -186,33 +117,26 @@ class DataGatherer(Thread):
 
         info['volume_quotas'] = {}
         info['nova_quotas'] = {}
+        info['network_quotas'] = {}
         for t in prodstack['tenants']:
             tid = t['id']
-            if self.use_nova_volumes:
-                info['volume_quotas'][tid] = cinder.quotas.get(tid, usage=True)._info
-            # old OS versions (e.g. Mitaka) will 404 if we request details
-            try:
-                info['nova_quotas'][tid] = nova.quotas.get(tid, detail=True)._info
-            except Exception:
-                info['nova_quotas'][tid] = nova.quotas.get(tid)._info
+            info['nova_quotas'][tid] = conn.get_compute_quotas(tid)
+            info['volume_quotas'][tid] = conn.get_volume_quotas(tid)
+            info['network_quotas'][tid] = conn.get_network_quotas(tid)
         return info
 
     def run(self):
-        log.debug("Starting data gather thread")
+        log.debug("Starting data gather thread for %s" % self.cloud)
         prodstack = {}
+        self.cache_file = config['cache_file'] + "-" + self.cloud
         while True:
             start_time = time()
             try:
-                keystone, nova, neutron, cinder = get_clients()
-
-                prodstack.update(self._get_keystone_info(keystone))
-                prodstack.update(self._get_neutron_info(neutron))
-                prodstack.update(self._get_nova_info(nova, cinder, prodstack))
-
+                    conn = get_clients(self.cloud)
+                    prodstack.update(self._get_keystone_info(conn))
+                    prodstack.update(self._get_neutron_info(conn))
+                    prodstack.update(self._get_nova_info(conn, prodstack))
             except Exception:
-                # Ignore failures, we will try again after refresh_interval.
-                # Most of them are termporary ie. connectivity problmes
-                # To alert on stale cache use openstack_exporter_cache_age_seconds metric
                 log.critical("Error getting stats: {}".format(traceback.format_exc()))
             else:
                 with open(self.cache_file + '.new', "wb+") as f:
@@ -229,7 +153,7 @@ class DataGatherer(Thread):
                     'Cache age in seconds. It can reset more frequently '
                     'than scraping interval so we use Gauge',
                     labels, registry=registry)
-        label_values = [config['cloud']]
+        label_values = [self.cloud]
         age.labels(*label_values).set(time() - path.getmtime(self.cache_file))
         duration = Gauge('openstack_exporter_cache_refresh_duration_seconds',
                          'Cache refresh duration in seconds.',
@@ -239,12 +163,12 @@ class DataGatherer(Thread):
 
 
 class Neutron():
-    def __init__(self):
+    def __init__(self, cloud):
         self.registry = CollectorRegistry()
         self.prodstack = {}
-        with open(config['cache_file'], 'rb') as f:
+        self.cloud = cloud
+        with open(config['cache_file']+'-'+self.cloud, 'rb') as f:
             self.prodstack = pickle.load(f)[0]
-
         self.tenant_map = {t['id']: t['name'] for t in self.prodstack['tenants']}
         self.network_map = {n['id']: n['name'] for n in self.prodstack['networks']}
         self.subnet_map = {
@@ -265,10 +189,11 @@ class Neutron():
         for ip in self.floating_ips:
             subnet = self.network_map[ip['floating_network_id']]
             try:
-                tenant = self.tenant_map[ip['tenant_id']]
+                tenant = self.tenant_map[ip['location'].project.id]
             except KeyError:
-                tenant = 'Unknown tenant ({})'.format(ip['tenant_id'])
-            key = (config['cloud'], subnet, tenant, 'floatingip', ip['status'])
+                log.error("Error getting project id")
+                tenant = 'Unknown tenant ({})'.format(ip['location'].project.id)
+            key = (self.cloud, subnet, tenant, 'floatingip', ip['status'])
             if key in ips:
                 ips[key] += 1
             else:
@@ -279,14 +204,14 @@ class Neutron():
         ips = {}
         for r in self.routers:
             if self._get_router_ip(r['id']):
-                if r['tenant_id'].startswith('<Tenant {'):
-                    r['tenant_id'] = ast.literal_eval(r['tenant_id'][8:-1])['id']
+                if r['project_id'].startswith('<Tenant {'):
+                    r['project_id'] = ast.literal_eval(r['project_id'][8:-1])['id']
                 try:
-                    tenant = self.tenant_map[r['tenant_id']]
+                    tenant = self.tenant_map[r['project_id']]
                 except KeyError:
-                    tenant = 'Unknown tenant ({})'.format(r['tenant_id'])
+                    tenant = 'Unknown tenant ({})'.format(r['project_id'])
                 subnet = self.network_map[r['external_gateway_info']['network_id']]
-                key = (config['cloud'], subnet, tenant, 'routerip', r['status'])
+                key = (self.cloud, subnet, tenant, 'routerip', r['status'])
                 if key in ips:
                     ips[key] += 1
                 else:
@@ -300,18 +225,19 @@ class Neutron():
                          labels, registry=self.registry)
         for n in self.prodstack['networks']:
             size = 0
-            for subnet in n['subnets']:
+            for subnet in n['subnet_ids']:
                 for pool in self.subnet_map[subnet]['pool']:
                     if ':' in pool['start']:
                         # Skip IPv6 address pools; they are big enough to
                         # drown the IPv4 numbers we might care about.
                         continue
                     size += IPRange(pool['start'], pool['end']).size
-            label_values = [config['cloud'], self.network_map[n['id']]]
+            label_values = [self.cloud, self.network_map[n['id']]]
             net_size.labels(*label_values).set(size)
 
-    def get_stats(self):
+    def get_stats(self, cloud):
         labels = ['cloud', 'subnet_name', 'tenant', 'ip_type', 'ip_status']
+        self.cloud = cloud
         ips = self.get_floating_ips()
         ips.update(self.get_router_ips())
         metrics = Gauge('neutron_public_ip_usage',
@@ -324,10 +250,12 @@ class Neutron():
 
 
 class Cinder():
-    def __init__(self):
+    def __init__(self, cloud):
         self.registry = CollectorRegistry()
         self.prodstack = {}
-        with open(config['cache_file'], 'rb') as f:
+        self.cloud = cloud
+        log.debug("Get stats from cloud %s" % self.cloud)
+        with open(config['cache_file']+'-'+self.cloud, 'rb') as f:
             self.prodstack = pickle.load(f)[0]
         self.tenant_map = {t['id']: t['name'] for t in self.prodstack['tenants']}
         self.use_nova_volumes = config.get('use_nova_volumes', True)
@@ -341,25 +269,28 @@ class Cinder():
                     ['cloud', 'tenant', 'type'], registry=self.registry)
         if not self.use_nova_volumes:
             return
-        for t, q in self.prodstack['volume_quotas'].items():
-            if t in self.tenant_map:
-                tenant = self.tenant_map[t]
-            else:
-                tenant = 'orphaned'
-            for tt in ['limit', 'in_use', 'reserved']:
-                gbs.labels(config['cloud'], tenant, tt).inc(q['gigabytes'][tt])
-                vol.labels(config['cloud'], tenant, tt).inc(q['volumes'][tt])
+        # TODO: get correct qupota usage
+        # log.debug("Volume QUOTA: %s" % json.dumps(self.prodstack['volume_quotas'], indent=2))
+        # for t, q in self.prodstack['volume_quotas'].items():
+        #     if t in self.tenant_map:
+        #         tenant = self.tenant_map[t]
+        #     else:
+        #         tenant = 'orphaned'
+        #     for tt in ['limit', 'in_use', 'reserved']:
+        #         gbs.labels(self.cloud, tenant, tt).inc(q['gigabytes'][tt])
+        #         vol.labels(self.cloud, tenant, tt).inc(q['volumes'][tt])
 
-    def get_stats(self):
+    def get_stats(self, cloud):
         self.gen_volume_quota_stats()
         return generate_latest(self.registry)
 
 
 class Nova():
-    def __init__(self):
+    def __init__(self, cloud):
         self.registry = CollectorRegistry()
         self.prodstack = {}
-        with open(config['cache_file'], 'rb') as f:
+        self.cloud = cloud
+        with open(config['cache_file']+'-'+self.cloud, 'rb') as f:
             self.prodstack = pickle.load(f)[0]
         self.hypervisors = self.prodstack['hypervisors']
         self.tenant_map = {t['id']: t['name'] for t in self.prodstack['tenants']}
@@ -415,11 +346,11 @@ class Nova():
             return val
 
         for h in self.hypervisors:
-            log.debug("Hypervisor: %s", h)
+            # log.debug("Hypervisor: %s", h)
             host = h['service']['host']
-            log.debug("host: %s", host)
+            # log.debug("host: %s", host)
             cpu_info = h['cpu_info']
-            log.debug("cpu_info: %s", cpu_info)
+            # log.debug("cpu_info: %s", cpu_info)
             arch = 'Unknown'
             if not cpu_info:
                 log.info("Could not get cpu info")
@@ -427,7 +358,7 @@ class Nova():
                 cpu_info = json.loads(cpu_info)
                 arch = cpu_info['arch']
             label_values = [
-                config['cloud'], host, self.aggregate_map.get(host, 'unknown'), self.services_map[host], arch]
+                self.cloud, host, self.aggregate_map.get(host, 'unknown'), self.services_map[host], arch]
             # Disabled hypervisors return None below, convert to 0
             vms.labels(*label_values).set(squashnone(h['running_vms']))
             vcpus_total.labels(*label_values).set(squashnone(h['vcpus']))
@@ -460,13 +391,13 @@ class Nova():
                 tenant = self.tenant_map[i['tenant_id']]
             else:
                 tenant = 'orphaned'
-            instances.labels(config['cloud'], tenant, i['status']).inc()
+            instances.labels(self.cloud, tenant, i['status']).inc()
 
             if i['flavor']['id'] in self.flavor_map:
                 flavor = self.flavor_map[i['flavor']['id']]
-                res_ram.labels(config['cloud'], tenant).inc(flavor['ram'])
-                res_vcpus.labels(config['cloud'], tenant).inc(flavor['vcpus'])
-                res_disk.labels(config['cloud'], tenant).inc(flavor['disk'])
+                res_ram.labels(self.cloud, tenant).inc(flavor['ram'])
+                res_vcpus.labels(self.cloud, tenant).inc(flavor['vcpus'])
+                res_disk.labels(self.cloud, tenant).inc(flavor['disk'])
             else:
                 missing_flavors = True
 
@@ -486,11 +417,11 @@ class Nova():
         labels = ['cloud', 'resource']
         openstack_overcommit = Gauge('openstack_allocation_ratio', 'Openstack overcommit ratios',
                                      labels, registry=self.registry)
-        label_values = [config['cloud'], 'vcpu']
+        label_values = [self.cloud, 'vcpu']
         openstack_overcommit.labels(*label_values).set(config['openstack_allocation_ratio_vcpu'])
-        label_values = [config['cloud'], 'ram']
+        label_values = [self.cloud, 'ram']
         openstack_overcommit.labels(*label_values).set(config['openstack_allocation_ratio_ram'])
-        label_values = [config['cloud'], 'disk']
+        label_values = [self.cloud, 'disk']
         openstack_overcommit.labels(*label_values).set(config['openstack_allocation_ratio_disk'])
 
     def gen_quota_stats(self):
@@ -514,19 +445,20 @@ class Nova():
 
             # we get detailed quota information only on recent OS versions
             if isinstance(q['cores'], int):
-                cores.labels(config['cloud'], tenant, 'limit').set(q['cores'])
-                fips.labels(config['cloud'], tenant, 'limit').set(q['floating_ips'])
-                inst.labels(config['cloud'], tenant, 'limit').set(q['instances'])
-                ram.labels(config['cloud'], tenant, 'limit').set(q['ram'])
+                cores.labels(self.cloud, tenant, 'limit').set(q['cores'])
+                fips.labels(self.cloud, tenant, 'limit').set(q['floating_ips'])
+                inst.labels(self.cloud, tenant, 'limit').set(q['instances'])
+                ram.labels(self.cloud, tenant, 'limit').set(q['ram'])
             else:
                 for tt in ['limit', 'in_use', 'reserved']:
-                    cores.labels(config['cloud'], tenant, tt).inc(q['cores'][tt])
-                    fips.labels(config['cloud'], tenant, tt).inc(q['floating_ips'][tt])
-                    inst.labels(config['cloud'], tenant, tt).inc(q['instances'][tt])
-                    ram.labels(config['cloud'], tenant, tt).inc(q['ram'][tt])
+                    cores.labels(self.cloud, tenant, tt).inc(q['cores'][tt])
+                    fips.labels(self.cloud, tenant, tt).inc(q['floating_ips'][tt])
+                    inst.labels(self.cloud, tenant, tt).inc(q['instances'][tt])
+                    ram.labels(self.cloud, tenant, tt).inc(q['ram'][tt])
 
-    def get_stats(self):
+    def get_stats(self, cloud):
         log.debug("get_stats")
+        self.cloud = cloud
         self.gen_hypervisor_stats()
         self.gen_instance_stats()
         self.gen_overcommit_stats()
@@ -547,9 +479,9 @@ class Swift():
         for h in self.swift_hosts:
             try:
                 requests.get(self.baseurl.format(h, 'diskusage'))
-                swift_up.labels(config['cloud'], h).set(1)
+                swift_up.labels(self.cloud, h).set(1)
             except requests.exceptions.RequestException:
-                swift_up.labels(config['cloud'], h).set(0)
+                swift_up.labels(self.cloud, h).set(0)
 
     def gen_disk_usage_stats(self):
         labels = ['cloud', 'hostname', 'device', 'type']
@@ -563,8 +495,8 @@ class Swift():
             for disk in r.json():
                 if not all([disk.get(i, False) for i in ['size', 'used', 'device']]):
                     continue
-                swift_disk.labels(config['cloud'], h, disk['device'], 'size').set(int(disk['size']))
-                swift_disk.labels(config['cloud'], h, disk['device'], 'used').set(int(disk['used']))
+                swift_disk.labels(self.cloud, h, disk['device'], 'size').set(int(disk['size']))
+                swift_disk.labels(self.cloud, h, disk['device'], 'used').set(int(disk['used']))
 
     def gen_quarantine_stats(self):
         labels = ['cloud', 'hostname', 'ring']
@@ -576,7 +508,7 @@ class Swift():
             except requests.exceptions.RequestException:
                 continue
             for ring in ['accounts', 'objects', 'containers']:
-                swift_quarantine.labels(config['cloud'], h, ring).set(r.json().get(ring))
+                swift_quarantine.labels(self.cloud, h, ring).set(r.json().get(ring))
 
     def _get_object_ring_replication_stats(self, h, swift_repl_duration):
         # Object replication is special
@@ -585,7 +517,7 @@ class Swift():
         except requests.exceptions.RequestException:
             return
         try:
-            swift_repl_duration.labels(config['cloud'], h, 'object').set(r.json()['object_replication_time'])
+            swift_repl_duration.labels(self.cloud, h, 'object').set(r.json()['object_replication_time'])
         except TypeError:
             print(traceback.format_exc())
 
@@ -598,13 +530,13 @@ class Swift():
         except requests.exceptions.RequestException:
             return
         try:
-            swift_repl_duration.labels(config['cloud'], h, ring).set(r.json()['replication_time'])
+            swift_repl_duration.labels(self.cloud, h, ring).set(r.json()['replication_time'])
         except TypeError:
             print(traceback.format_exc())
 
         for metric in metrics:
             try:
-                swift_repl.labels(config['cloud'], h, ring, metric).set(r.json()['replication_stats'][metric])
+                swift_repl.labels(self.cloud, h, ring, metric).set(r.json()['replication_stats'][metric])
             except TypeError:
                 print(traceback.format_exc())
 
@@ -693,7 +625,7 @@ class SwiftAccountUsage():
             account = self.reseller_prefix + tenant_id
             bytes_used = self._get_account_usage(account)
 
-            swift_account.labels(config['cloud'], account, tenant_name).set(bytes_used)
+            swift_account.labels(self.cloud, account, tenant_name).set(bytes_used)
 
     def get_stats(self):
         self.gen_account_stats()
@@ -741,13 +673,20 @@ class OpenstackExporterHandler(BaseHTTPRequestHandler):
         url = urlparse.urlparse(self.path)
         if url.path == '/metrics':
             try:
-                collectors = [COLLECTORS[collector]() for collector in get_collectors(config.get('enabled_collectors'))]
-                log.debug("Collecting stats..")
+                clouds = get_clouds()
+                collectors = {}
                 output = ''
-                for collector in collectors:
-                    output += collector.get_stats()
-                if data_gatherer:
-                    output += data_gatherer.get_stats()
+                for cloud in clouds:
+                    # if the cache_file does not exist we continue to another cloud
+                    if not path.isfile(config['cache_file']+'-'+cloud):
+                        continue
+                    collectors[cloud] = [COLLECTORS[collector](cloud) for collector in get_collectors(config.get('enabled_collectors'))]
+                    log.debug("Collecting stats..")
+                    for collector in collectors[cloud]:
+                        output += collector.get_stats(cloud)
+                    if data_gatherer:
+                        # log.debug("BEGIN data_gatherer and output: %s" % output)
+                        output += data_gatherer[cloud].get_stats()
 
                 self.send_response(200)
                 self.send_header('Content-Type', CONTENT_TYPE_LATEST)
@@ -792,13 +731,15 @@ if __name__ == '__main__':
     else:
         log.addHandler(logging.StreamHandler())
     config = yaml.safe_load(args.config_file.read())
+    clouds = get_clouds()
     numeric_log_level = getattr(logging, config.get('log_level').upper(), None)
     if not isinstance(numeric_log_level, int):
         raise ValueError('Invalid log level: %s' % config.get('log_level'))
     log.setLevel(numeric_log_level) 
-    data_gatherer = None
+    data_gatherer = {}
     if data_gatherer_needed(config):
-        data_gatherer = DataGatherer()
-        data_gatherer.start()
+        for cloud in clouds:
+            data_gatherer[cloud] = DataGatherer(cloud)
+            data_gatherer[cloud].start()
     server = ForkingHTTPServer(('', config.get('listen_port')), handler)
     server.serve_forever()
