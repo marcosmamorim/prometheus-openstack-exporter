@@ -1,0 +1,13 @@
+clouds:
+  openstack:
+    auth:
+      auth_url: http://keystone_ip:5000/v3
+      username: "admin"
+      project_id: project_id 
+      project_name: "project_name"
+      user_domain_name: "Default"
+      password: "password"
+    region_name: "regionOne"
+    interface: "public"
+    identity_api_version: 3
+

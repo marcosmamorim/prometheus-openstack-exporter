@@ -2,10 +2,12 @@
 
 prometheusDir='/etc/prometheus'
 configFile=${configFile:-"${prometheusDir}/prometheus-openstack-exporter.yaml"}
+cloudFile=${cloudFile:-"${prometheusDir}/clouds.yaml"}
 listenPort=${listenPort:-9183}
+debugLevel=${debugLevel:-DEBUG}
 cacheRefreshInterval=${cacheRefreshInterval:-300}
-cacheFileName=${cacheFileName:-"$(mktemp -p /dev/shm/)"}
-cloud=${OS_REGION_NAME:-mycloud}
+cacheFileName=${cacheFileName:-"/logs/openstack-node-exporter/cloud-"}
+cacheFileDir=/logs/openstack-node-exporter/
 vcpuRatio=${vcpuRatio:-1.0}
 ramRatio=${ramRatio:-1.0}
 diskRatio=${diskRatio:-1.0}
@@ -25,17 +27,17 @@ if [ ! -e "${configFile}" ]; then
     mkdir -p ${prometheusDir}
     cp prometheus-openstack-exporter.sample.yaml ${configFile}
     
-    sed -i "s|VAR_LISTEN_PORT|${listenPort}|g" 					${configFile}
-    sed -i "s|VAR_CACHE_REFRESH_INTERVAL|${cacheRefreshInterval}|g" 		${configFile}
-    sed -i "s|VAR_CACHE_FILE|${cacheFileName}|g" 				${configFile}
-    sed -i "s|VAR_CLOUD|${cloud}|g" 						${configFile}
-    sed -i "s|VAR_VCPU_RATIO|${vcpuRatio}|g" 					${configFile}
-    sed -i "s|VAR_RAM_RATIO|${ramRatio}|g" 					${configFile}
-    sed -i "s|VAR_DISK_RATIO|${diskRatio}|g"	 				${configFile}
-    sed -i "s|VAR_SCHEDULABLE_INSTANCE_RAM|${schedulableInstanceRam}|g" 	${configFile}
-    sed -i "s|VAR_SCHEDULABLE_INSTANCE_VCPU|${schedulableInstanceVcpu}|g" 	${configFile}
-    sed -i "s|VAR_SCHEDULABLE_INSTANCE_DISK|${schedulableInstanceDisk}|g" 	${configFile}
-    sed -i "s|VAR_USE_NOVA_VOLUMES|${useNovaVolumes}|g" 			${configFile}
+    sed -i "s|VAR_LISTEN_PORT|${listenPort}|g"    ${configFile}
+    sed -i "s|VAR_CACHE_REFRESH_INTERVAL|${cacheRefreshInterval}|g"   ${configFile}
+    sed -i "s|VAR_CACHE_FILE|${cacheFileName}|g"    ${configFile}
+    sed -i "s|DEBUG_LEVEL|${debugLevel}|g"    ${configFile}
+    sed -i "s|VAR_VCPU_RATIO|${vcpuRatio}|g"    ${configFile}
+    sed -i "s|VAR_RAM_RATIO|${ramRatio}|g"    ${configFile}
+    sed -i "s|VAR_DISK_RATIO|${diskRatio}|g"    ${configFile}
+    sed -i "s|VAR_SCHEDULABLE_INSTANCE_RAM|${schedulableInstanceRam}|g"   ${configFile}
+    sed -i "s|VAR_SCHEDULABLE_INSTANCE_VCPU|${schedulableInstanceVcpu}|g"   ${configFile}
+    sed -i "s|VAR_SCHEDULABLE_INSTANCE_DISK|${schedulableInstanceDisk}|g"   ${configFile}
+    sed -i "s|VAR_USE_NOVA_VOLUMES|${useNovaVolumes}|g"   ${configFile}
 
     for i in ${enabledCollectors}; do
         sed -i "s/.*VAR_ENABLED_COLLECTORS/  - ${i}\n    - VAR_ENABLED_COLLECTORS/g" 	${configFile}
@@ -66,8 +68,17 @@ if [ ! -e "${configFile}" ]; then
     cat ${configFile}
 fi
 
+mkdir -p /logs/openstack-node-exporter/
+
+if [ ! -e "${cloudFile}" ]; then
+    mkdir -p ${prometheusDir}
+    cp clouds.yaml ${cloudFile}
+fi
+
+export OS_CLOUD_FILE=${cloudFile}
+
 /prometheus-openstack-exporter ${configFile}
 
-rm ${cacheFileName}
+rm -rf ${cacheFileName}
 
 exit 0

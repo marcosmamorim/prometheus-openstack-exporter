@@ -22,6 +22,8 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
+# TODO: Remove config['cache_file'] and use config['cache_dir'] instead
+
 import argparse
 import yaml
 import json
@@ -138,10 +140,10 @@ class DataGatherer(Thread):
         while True:
             start_time = time()
             try:
-                    conn, nova, cinder, neutron = get_clients(self.cloud)
-                    prodstack.update(self._get_keystone_info(conn))
-                    prodstack.update(self._get_neutron_info(conn))
-                    prodstack.update(self._get_nova_info(conn, prodstack, nova, cinder, neutron))
+                conn, nova, cinder, neutron = get_clients(self.cloud)
+                prodstack.update(self._get_keystone_info(conn))
+                prodstack.update(self._get_neutron_info(conn))
+                prodstack.update(self._get_nova_info(conn, prodstack, nova, cinder, neutron))
             except Exception:
                 log.critical("Error getting stats: {}".format(traceback.format_exc()))
             else:
