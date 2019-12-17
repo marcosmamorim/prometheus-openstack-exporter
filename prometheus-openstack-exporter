@@ -42,6 +42,7 @@ from netaddr import IPRange
 from openstack import connection
 import openstack.config
 import random
+import os_client_config
 
 import swift.common.utils
 from swift.common.ring.ring import Ring
@@ -53,9 +54,12 @@ config = None
 log = logging.getLogger('poe-logger')
 
 def get_clients(cloud):
+    nova = os_client_config.make_client('compute', cloud=cloud)
+    cinder = os_client_config.make_client('volume', cloud=cloud)
+    neutron = os_client_config.make_client('volume', cloud=cloud)
     config = openstack.config.get_cloud_region(cloud=cloud)
     conn = connection.Connection(config=config)
-    return conn
+    return conn, nova, cinder, neutron
 
 def get_clouds():
     with open(r'clouds.yaml') as file:
@@ -94,7 +98,7 @@ class DataGatherer(Thread):
         info['subnets'] = [dict(subnet) for subnet in conn.network.subnets()]
         return info
 
-    def _get_nova_info(self, conn, prodstack):
+    def _get_nova_info(self, conn, prodstack, nova, cinder, neutron):
         info = {}
         info['hypervisors'] = [dict(hypervisor) for hypervisor in conn.list_hypervisors()]
         info['services'] = [dict(service) for service in conn.compute.services()]
@@ -114,15 +118,17 @@ class DataGatherer(Thread):
                     info['instances'].extend(new_instances)
                 else:
                     break
-
         info['volume_quotas'] = {}
         info['nova_quotas'] = {}
-        info['network_quotas'] = {}
         for t in prodstack['tenants']:
             tid = t['id']
-            info['nova_quotas'][tid] = conn.get_compute_quotas(tid)
-            info['volume_quotas'][tid] = conn.get_volume_quotas(tid)
-            info['network_quotas'][tid] = conn.get_network_quotas(tid)
+            if self.use_nova_volumes:
+                info['volume_quotas'][tid] = cinder.quotas.get(tid, usage=True)._info
+            # old OS versions (e.g. Mitaka) will 404 if we request details
+            try:
+                info['nova_quotas'][tid] = nova.quotas.get(tid, detail=True)._info
+            except Exception:
+                info['nova_quotas'][tid] = nova.quotas.get(tid)._info
         return info
 
     def run(self):
@@ -132,10 +138,10 @@ class DataGatherer(Thread):
         while True:
             start_time = time()
             try:
-                    conn = get_clients(self.cloud)
+                    conn, nova, cinder, neutron = get_clients(self.cloud)
                     prodstack.update(self._get_keystone_info(conn))
                     prodstack.update(self._get_neutron_info(conn))
-                    prodstack.update(self._get_nova_info(conn, prodstack))
+                    prodstack.update(self._get_nova_info(conn, prodstack, nova, cinder, neutron))
             except Exception:
                 log.critical("Error getting stats: {}".format(traceback.format_exc()))
             else:
@@ -269,16 +275,15 @@ class Cinder():
                     ['cloud', 'tenant', 'type'], registry=self.registry)
         if not self.use_nova_volumes:
             return
-        # TODO: get correct qupota usage
-        # log.debug("Volume QUOTA: %s" % json.dumps(self.prodstack['volume_quotas'], indent=2))
-        # for t, q in self.prodstack['volume_quotas'].items():
-        #     if t in self.tenant_map:
-        #         tenant = self.tenant_map[t]
-        #     else:
-        #         tenant = 'orphaned'
-        #     for tt in ['limit', 'in_use', 'reserved']:
-        #         gbs.labels(self.cloud, tenant, tt).inc(q['gigabytes'][tt])
-        #         vol.labels(self.cloud, tenant, tt).inc(q['volumes'][tt])
+
+        for t, q in self.prodstack['volume_quotas'].items():
+            if t in self.tenant_map:
+                tenant = self.tenant_map[t]
+            else:
+                tenant = 'orphaned'
+            for tt in ['limit', 'in_use', 'reserved']:
+                gbs.labels(self.cloud, tenant, tt).inc(q['gigabytes'][tt])
+                vol.labels(self.cloud, tenant, tt).inc(q['volumes'][tt])
 
     def get_stats(self, cloud):
         self.gen_volume_quota_stats()
