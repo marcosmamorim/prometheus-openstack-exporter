@@ -9,7 +9,7 @@ Data can be visualised using [Grafana](https://grafana.com/) and the [OpenStack 
 ## Requirements
 
 ```
-sudo apt-get install python-neutronclient python-novaclient python-keystoneclient python-netaddr python-cinderclient
+sudo apt-get install python-neutronclient python-novaclient python-keystoneclient python-netaddr python-cinderclient python-openstack-client
 ```
 
 Install prometheus_client. On Ubuntu 16.04:
@@ -48,6 +48,8 @@ export OS_REGION_NAME=cloudname
 export OS_AUTH_URL=http://XX.XX.XX.XX:35357/v2.0
 EOF
 
+unset OS_CLOUDNAME OS_PASSWORD OS_AUTH_URL OS_PROJECT_NAME OS_REGION_NAME OS_TENANT_ID OS_TENANT_NAME OS_USERNAME  OS_AUTH_TYPE OS_IDENTITY_API_VERSION OS_IMAGE_API_VERSION OS_NO_CACHE OS_PROJECT_DOMAIN_NAME OS_USER_DOMAIN_NAME OS_VOLUME_API_VERSION
+
 # create default config location
 sudo sh -c 'echo "CONFIG_FILE=/etc/prometheus-openstack-exporter/prometheus-openstack-exporter.yaml">/etc/default/prometheus-openstack-exporter'
 
@@ -84,11 +86,10 @@ services:
 # docker run
 docker run \
   -itd \
-  --name prom_openstack_exporter \
+  --name prometheus-node-exporter \
   -p 9183:9183 \
-  --env-file=$(pwd)/admin.novarc.example \
   --restart=unless-stopped \
-  moghaddas/prom-openstack-exporter:latest
+  prometheus-node-exporter:latest
 
 ```
 
