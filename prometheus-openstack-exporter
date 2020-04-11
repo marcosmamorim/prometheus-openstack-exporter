@@ -42,8 +42,8 @@ from SocketServer import ForkingMixIn
 from prometheus_client import CollectorRegistry, generate_latest, Gauge, CONTENT_TYPE_LATEST
 from netaddr import IPRange
 from openstack import connection
-import openstack.config
 import random
+import openstack.config
 import os_client_config
 import os
 import swift.common.utils
@@ -69,14 +69,16 @@ def get_clients(cloud):
         log.error("Error connecting to cloud {0}: {1}". format(cloud, e))
 
 
-def get_clouds():
-    with open(r'clouds.yaml') as file:
-        clouds = yaml.load(file, Loader=yaml.FullLoader)
-    cloud_conn = []
-    for cloud in clouds['clouds']:
-        log.debug("Loading cloud: %s" % cloud)
-        cloud_conn.append(cloud)
-    return cloud_conn
+def get_clouds(config_dir='/etc/prometheus/'):
+    if os.path.exists(config_dir+'clouds.yaml'):
+        cloud_file = config_dir+'clouds.yaml'
+        with open(cloud_file, 'r') as file:
+            clouds = yaml.load(file, Loader=yaml.FullLoader)
+        cloud_conn = []
+        for cloud in clouds['clouds']:
+            log.debug("Loading cloud: %s" % cloud)
+            cloud_conn.append(cloud)
+        return cloud_conn
 
 
 class DataGatherer(Thread):
@@ -789,6 +791,7 @@ if __name__ == '__main__':
     else:
         log.addHandler(logging.StreamHandler())
     config = yaml.safe_load(args.config_file.read())
+    config_dir = config.get('config_dir')
     clouds = get_clouds()
     numeric_log_level = getattr(logging, config.get('log_level').upper(), None)
     if not isinstance(numeric_log_level, int):

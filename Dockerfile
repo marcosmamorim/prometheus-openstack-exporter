@@ -19,10 +19,10 @@ RUN \
 
 COPY prometheus-openstack-exporter /
 COPY prometheus-openstack-exporter.sample.yaml /prometheus-openstack-exporter.sample.yaml
-COPY clouds.yaml /
 COPY wrapper.sh /
 
 ENV OS_CLOUD_FILE=/etc/prometheus/clouds.yaml
+RUN ln -s /etc/prometheus/clouds.yaml /clouds.yaml
 
 EXPOSE 9183
 ENTRYPOINT ["/bin/sh", "/wrapper.sh"]

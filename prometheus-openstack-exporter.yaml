@@ -3,8 +3,9 @@
 #
 
 listen_port: 9183
+config_dir: /etc/prometheus
 cache_refresh_interval: 300  # In seconds
-cache_file: /var/cache/prometheus-openstack-exporter/mycloud
+cache_file: /tmp/var/cache/prometheus-openstack-exporter/mycloud
 cloud: mycloud
 openstack_allocation_ratio_vcpu: 2.5
 openstack_allocation_ratio_ram: 1.1
@@ -17,7 +18,7 @@ enabled_collectors:
   - cinder
   - neutron
   - nova
-  - swift
+#  - swift
 #  - swift-account-usage
 
 # To export hypervisor_schedulable_instances metric set desired instance size
