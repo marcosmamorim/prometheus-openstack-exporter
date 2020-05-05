@@ -1,13 +1,13 @@
 #!/bin/sh
 
-prometheusDir='/etc/prometheus'
-configFile=${configFile:-"${prometheusDir}/prometheus-openstack-exporter.yaml"}
+prometheusDir='/etc/openstack-exporter'
+configFile=${configFile:-"${prometheusDir}/openstack-exporter.yaml"}
 cloudFile=${cloudFile:-"${prometheusDir}/clouds.yaml"}
 listenPort=${listenPort:-9183}
 debugLevel=${debugLevel:-DEBUG}
 cacheRefreshInterval=${cacheRefreshInterval:-300}
-cacheFileName=${cacheFileName:-"/logs/openstack-node-exporter/cloud-"}
-cacheFileDir=/logs/openstack-node-exporter/
+cacheFileName=${cacheFileName:-"/logs/openstack-exporter/cloud-"}
+cacheFileDir=/logs/openstack-exporter/
 vcpuRatio=${vcpuRatio:-1.0}
 ramRatio=${ramRatio:-1.0}
 diskRatio=${diskRatio:-1.0}
@@ -68,7 +68,7 @@ if [ ! -e "${configFile}" ]; then
     cat ${configFile}
 fi
 
-mkdir -p /logs/openstack-node-exporter/
+mkdir -p /logs/openstack-exporter/
 
 if [ ! -e "${cloudFile}" ]; then
     mkdir -p ${prometheusDir}

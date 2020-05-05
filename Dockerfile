@@ -18,11 +18,11 @@ RUN \
     pip install -r requirements.txt
 
 COPY prometheus-openstack-exporter /
-COPY prometheus-openstack-exporter.sample.yaml /prometheus-openstack-exporter.sample.yaml
+COPY prometheus-openstack-exporter.sample.yaml /openstack-exporter.sample.yaml
 COPY wrapper.sh /
 
-ENV OS_CLOUD_FILE=/etc/prometheus/clouds.yaml
-RUN ln -s /etc/prometheus/clouds.yaml /clouds.yaml
+ENV OS_CLOUD_FILE=/etc/openstack-exporter/clouds.yaml
+RUN ln -s /etc/openstack-exporter/clouds.yaml /clouds.yaml
 
 EXPOSE 9183
 ENTRYPOINT ["/bin/sh", "/wrapper.sh"]

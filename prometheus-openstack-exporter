@@ -69,9 +69,9 @@ def get_clients(cloud):
         log.error("Error connecting to cloud {0}: {1}". format(cloud, e))
 
 
-def get_clouds(config_dir='/etc/prometheus/'):
-    if os.path.exists(config_dir+'clouds.yaml'):
-        cloud_file = config_dir+'clouds.yaml'
+def get_clouds(config_dir='/etc/openstack-exporter'):
+    if os.path.exists(config_dir+'/clouds.yaml'):
+        cloud_file = config_dir+'/clouds.yaml'
         with open(cloud_file, 'r') as file:
             clouds = yaml.load(file, Loader=yaml.FullLoader)
         cloud_conn = []
@@ -79,7 +79,8 @@ def get_clouds(config_dir='/etc/prometheus/'):
             log.debug("Loading cloud: %s" % cloud)
             cloud_conn.append(cloud)
         return cloud_conn
-
+    else:
+        return None
 
 class DataGatherer(Thread):
     """Periodically retrieve data from openstack in a separate thread,
@@ -158,9 +159,14 @@ class DataGatherer(Thread):
             start_time = time()
             try:
                 conn, nova, cinder, neutron = get_clients(self.cloud)
-                prodstack.update(self._get_keystone_info(conn))
-                prodstack.update(self._get_neutron_info(conn))
-                prodstack.update(self._get_nova_info(conn, prodstack, nova, cinder, neutron))
+                if conn is not None:
+                    prodstack.update(self._get_keystone_info(conn))
+                    prodstack.update(self._get_neutron_info(conn))
+                    if nova is not None and cinder is not None and neutron is not None:
+                        prodstack.update(self._get_nova_info(conn, prodstack, nova, cinder, neutron))
+                    else:
+                        log.error("Error connecting Nova: {0}, Cinder: {1}, Neutron: {2}".format(nova, cinder,
+                                                                                                 neutron))
             except Exception as e:
                 log.error("Error getting stats: {}".format(e))
             else:
@@ -734,7 +740,8 @@ class OpenstackExporterHandler(BaseHTTPRequestHandler):
         url = urlparse.urlparse(self.path)
         if url.path == '/metrics':
             try:
-                clouds = get_clouds()
+
+                clouds = get_clouds(config['config_dir'])
                 collectors = {}
                 output = ''
                 for cloud in clouds:
@@ -781,7 +788,7 @@ if __name__ == '__main__':
                                      formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('config_file', nargs='?',
                         help='Configuration file path',
-                        default='/etc/prometheus/prometheus-openstack-exporter.yaml',
+                        default='/etc/openstack-exporter/openstack-exporter.yaml',
                         type=argparse.FileType('r'))
     args = parser.parse_args()
     log.setLevel(logging.DEBUG)
@@ -792,15 +799,20 @@ if __name__ == '__main__':
         log.addHandler(logging.StreamHandler())
     config = yaml.safe_load(args.config_file.read())
     config_dir = config.get('config_dir')
-    clouds = get_clouds()
-    numeric_log_level = getattr(logging, config.get('log_level').upper(), None)
-    if not isinstance(numeric_log_level, int):
-        raise ValueError('Invalid log level: %s' % config.get('log_level'))
-    log.setLevel(numeric_log_level) 
-    data_gatherer = {}
-    if data_gatherer_needed(config):
-        for cloud in clouds:
-            data_gatherer[cloud] = DataGatherer(cloud)
-            data_gatherer[cloud].start()
-    server = ForkingHTTPServer(('', config.get('listen_port')), handler)
-    server.serve_forever()
+    if config_dir is None:
+        config_dir = '/etc/openstack-exporter'
+    clouds = get_clouds(config_dir)
+    if clouds is None:
+        log.error("Can't get cloud list. Check you clouds.yaml file")
+    else:
+        numeric_log_level = getattr(logging, config.get('log_level').upper(), None)
+        if not isinstance(numeric_log_level, int):
+            raise ValueError('Invalid log level: %s' % config.get('log_level'))
+        log.setLevel(numeric_log_level)
+        data_gatherer = {}
+        if data_gatherer_needed(config):
+            for cloud in clouds:
+                data_gatherer[cloud] = DataGatherer(cloud)
+                data_gatherer[cloud].start()
+        server = ForkingHTTPServer(('', config.get('listen_port')), handler)
+        server.serve_forever()
