@@ -25,6 +25,10 @@ schedulable_instance_size:
 # Uncomment if the cloud doesn't provide cinder / nova volumes:
 use_nova_volumes: VAR_USE_NOVA_VOLUMES # useNovaVolumes=True
 
+# List of metadata to convert to gauge and send it
+instance_metadata:
+  - project
+
 ## Swift
 
 # There is no way to retrieve them using OpenStack APIs

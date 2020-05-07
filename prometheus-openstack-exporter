@@ -41,8 +41,8 @@ from BaseHTTPServer import HTTPServer
 from SocketServer import ForkingMixIn
 from prometheus_client import CollectorRegistry, generate_latest, Gauge, CONTENT_TYPE_LATEST
 from netaddr import IPRange
-from openstack import connection
 import random
+from openstack import connection
 import openstack.config
 import os_client_config
 import os
@@ -110,6 +110,22 @@ class DataGatherer(Thread):
         info['subnets'] = [dict(subnet) for subnet in conn.network.subnets()]
         return info
 
+    def _get_metadata_info(self, prodstack):
+        m_labels = config.get('instance_metadata', ['project', 'course_name', 'env_type', 'platform', 'Purpose', 'Project', 'catalog_item'])
+        info = {}
+        info['metadata'] = {}
+        for i in prodstack['instances']:
+            t_id = i['project_id']
+            meta = dict(i['metadata'])
+            info['metadata'][t_id] = {}
+            for label in m_labels:
+                # if label metadata not found set label to untagged
+                if label in meta:
+                    info['metadata'][t_id][label] = meta[label]
+                else:
+                    info['metadata'][t_id][label] = 'untagged'
+        return info
+
     def _get_nova_info(self, conn, prodstack, nova, cinder, neutron):
         info = {}
         info['hypervisors'] = [dict(hypervisor) for hypervisor in conn.list_hypervisors()]
@@ -164,6 +180,7 @@ class DataGatherer(Thread):
                     prodstack.update(self._get_neutron_info(conn))
                     if nova is not None and cinder is not None and neutron is not None:
                         prodstack.update(self._get_nova_info(conn, prodstack, nova, cinder, neutron))
+                        prodstack.update(self._get_metadata_info(prodstack))
                     else:
                         log.error("Error connecting Nova: {0}, Cinder: {1}, Neutron: {2}".format(nova, cinder,
                                                                                                  neutron))
@@ -201,7 +218,6 @@ class Neutron():
         with open(config['cache_file']+'-'+self.cloud, 'rb') as f:
             self.prodstack = pickle.load(f)[0]
 
-        log.debug("ROUTERS: %s" % json.dumps(self.prodstack['routers'], indent=2))
         self.tenant_map = {t['id']: t['name'] for t in self.prodstack['tenants']}
         self.network_map = {n['id']: n['name'] for n in self.prodstack['networks']}
         self.subnet_map = {
@@ -406,7 +422,6 @@ class Nova():
             return val
 
         for h in self.hypervisors:
-            log.debug("Hypervisor: %s", json.dumps(h, indent=2))
             host = h['service']['host']
             # log.debug("host: %s", host)
             cpu_info = h['cpu_info']
@@ -426,9 +441,18 @@ class Nova():
             mem_total.labels(*label_values).set(squashnone(h['memory_mb']))
             mem_used.labels(*label_values).set(squashnone(h['memory_mb_used']))
 
-    # TODO: Create metrics for each instances
-    def gen_instance_detail(self):
-        pass
+    def gen_instance_metadata(self):
+        m_labels = ['project', 'course_name', 'env_type', 'platform', 'Purpose', 'Project', 'catalog_item']
+        labels = ['cloud']
+        labels.extend(m_labels)
+        i_meta = Gauge('nova_instances_metadata',
+                       'Nova Instances metatada',
+                       labels, registry=self.registry)
+        for p, k in self.prodstack['metadata'].items():
+            g_values = [self.cloud]
+            for label in m_labels:
+                g_values.append(k[label])
+            i_meta.labels(*g_values).inc(1)
 
     def gen_instance_stats(self):
         missing_flavors = False
@@ -530,6 +554,7 @@ class Nova():
         self.gen_hypervisor_stats()
         self.gen_instance_stats()
         self.gen_quota_stats()
+        self.gen_instance_metadata()
         return generate_latest(self.registry)
 
 
@@ -752,7 +777,6 @@ class OpenstackExporterHandler(BaseHTTPRequestHandler):
                     for collector in collectors[cloud]:
                         output += collector.get_stats(cloud)
                     if data_gatherer:
-                        # log.debug("BEGIN data_gatherer and output: %s" % output)
                         output += data_gatherer[cloud].get_stats()
 
                 self.send_response(200)
