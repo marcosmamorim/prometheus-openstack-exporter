@@ -97,8 +97,14 @@ class DataGatherer(Thread):
         self.use_nova_volumes = config.get('use_nova_volumes', True)
 
     def _get_keystone_info(self, conn):
+        log.debug("_get_keystone_info")
         info = {}
         info['tenants'] = [dict(x) for x in conn.identity.projects()]
+        return info
+
+    def _get_heat_info(self, conn):
+        info = {}
+        info['stacks'] = [dict(x) for x in conn.list_stacks()]
         return info
 
     def _get_neutron_info(self, conn):
@@ -178,6 +184,8 @@ class DataGatherer(Thread):
                 if conn is not None:
                     prodstack.update(self._get_keystone_info(conn))
                     prodstack.update(self._get_neutron_info(conn))
+                    log.debug("Starting collect heat stack metrics")
+                    prodstack.update(self._get_heat_info(conn))
                     if nova is not None and cinder is not None and neutron is not None:
                         prodstack.update(self._get_nova_info(conn, prodstack, nova, cinder, neutron))
                         prodstack.update(self._get_metadata_info(prodstack))
@@ -366,6 +374,31 @@ class Cinder():
 
     def get_stats(self, cloud):
         self.gen_volume_quota_stats()
+        return generate_latest(self.registry)
+
+
+class Heat():
+    def __init__(self, cloud):
+        self.registry = CollectorRegistry()
+        self.prodstack = {}
+        self.cloud = cloud
+        log.debug("Get stats from cloud %s" % self.cloud)
+        with open(config['cache_file']+'-'+self.cloud, 'rb') as f:
+            self.prodstack = pickle.load(f)[0]
+        log.debug(json.dumps(self.prodstack, indent=2))
+        # self.tenant_map = {t['id']: t['name'] for t in self.prodstack['tenants']}
+
+    def gen_heat_stats(self):
+        stack = Gauge('openstack_heat_stack_count',
+                    'Heat Stack details',
+                    ['cloud', 'project', 'id', 'status', 'action', 'stack_name'], registry=self.registry)
+
+        for t in self.prodstack['stacks']:
+            stack.labels(self.cloud, t['properties']['project'], t['id'], t['status'], t['action'], t['name']).inc(1)
+
+    def get_stats(self, cloud):
+        log.debug("Loading heat gen stats")
+        self.gen_heat_stats()
         return generate_latest(self.registry)
 
 
@@ -733,6 +766,7 @@ COLLECTORS = {
     'cinder': Cinder,
     'neutron': Neutron,
     'nova': Nova,
+    'heat': Heat,
     'swift': Swift,
     'swift-account-usage': SwiftAccountUsage,
     }
@@ -741,6 +775,7 @@ DATA_GATHERER_USERS = [
     'cinder',
     'neutron',
     'nova',
+    'heat'
     ]
 
 
@@ -749,7 +784,7 @@ def get_collectors(collectors):
     # specify default set of collectors before commit 662b70f and f27cda8.
     # https://github.com/CanonicalLtd/prometheus-openstack-exporter/issues/80
     if not collectors:
-        return ['cinder', 'swift', 'nova', 'neutron']
+        return ['cinder', 'swift', 'nova', 'neutron', 'heat']
     return collectors
 
 

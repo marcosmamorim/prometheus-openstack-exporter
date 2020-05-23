@@ -15,9 +15,10 @@ log_level: INFO
 # Configure the enabled collectors here.  Note that the Swift account
 # collector in particular has special requirements.
 enabled_collectors:
+  - nova
   - cinder
   - neutron
-  - nova
+  - heat
 #  - swift
 #  - swift-account-usage
 
@@ -29,6 +30,16 @@ schedulable_instance_size:
 
 # Uncomment if the cloud doesn't provide cinder / nova volumes:
 #use_nova_volumes: False
+
+instance_metadata:
+  - Purpose
+  - catalog_item
+  - env_type
+  - course_name
+
+  - platform
+  - Project
+  - project
 
 ## Swift
 
