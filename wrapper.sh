@@ -68,7 +68,7 @@ if [ ! -e "${configFile}" ]; then
     cat ${configFile}
 fi
 
-mkdir -p /logs/openstack-exporter/
+mkdir -p /var/logs/openstack-exporter/
 
 if [ ! -e "${cloudFile}" ]; then
     mkdir -p ${prometheusDir}
