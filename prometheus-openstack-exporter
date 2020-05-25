@@ -60,12 +60,13 @@ log = logging.getLogger('poe-logger')
 def get_clients(cloud):
     try:
         nova = os_client_config.make_client('compute', cloud=cloud)
+        heat = os_client_config.make_client('orchestration', cloud=cloud)
         cinder = os_client_config.make_client('volume', cloud=cloud)
         cinder_rest = os_client_config.make_rest_client('volume', cloud=cloud)
         neutron = os_client_config.make_client('network', cloud=cloud)
         config = openstack.config.get_cloud_region(cloud=cloud)
         conn = connection.Connection(config=config)
-        return conn, nova, cinder, neutron, cinder_rest
+        return conn, nova, cinder, neutron, cinder_rest, heat
     except Exception as e:
         log.error("Error connecting to cloud {0}: {1}". format(cloud, e))
 
@@ -103,9 +104,10 @@ class DataGatherer(Thread):
         info['tenants'] = [dict(x) for x in conn.identity.projects()]
         return info
 
-    def _get_heat_info(self, conn):
+    def _get_heat_info(self, conn, heat):
         info = {}
         info['stacks'] = [dict(x) for x in conn.list_stacks()]
+        info['heat_services'] = [dict(x.to_dict()) for x in heat.services.list()]
         return info
 
     def _get_neutron_info(self, conn):
@@ -184,12 +186,12 @@ class DataGatherer(Thread):
         while True:
             start_time = time()
             try:
-                conn, nova, cinder, neutron, cinder_rest = get_clients(self.cloud)
+                conn, nova, cinder, neutron, cinder_rest, heat = get_clients(self.cloud)
                 if conn is not None:
                     prodstack.update(self._get_keystone_info(conn))
                     prodstack.update(self._get_neutron_info(conn))
                     log.debug("Starting collect heat stack metrics")
-                    prodstack.update(self._get_heat_info(conn))
+                    prodstack.update(self._get_heat_info(conn, heat))
                     if nova is not None and cinder is not None and neutron is not None:
                         prodstack.update(self._get_nova_info(conn, prodstack, nova, cinder, neutron, cinder_rest))
                         prodstack.update(self._get_metadata_info(prodstack))
@@ -407,7 +409,6 @@ class Cinder():
             return 1
 
         for s in self.prodstack['volume_services']:
-            log.info(json.dumps(s))
             host = s['host']
             svc_state.labels(self.cloud, host, s['binary'], s['state'], s['zone']).set(squashup(s['state']))
             svc_status.labels(self.cloud, host, s['binary'], s['status'], s['zone']).set(squashup(s['status']))
@@ -438,9 +439,22 @@ class Heat():
         for t in self.prodstack['stacks']:
             stack.labels(self.cloud, t['properties']['project'], t['id'], t['status'], t['action'], t['name']).inc(1)
 
+    def gen_service_status(self):
+        status_labels = ['cloud', 'hostname', 'service', 'status', 'topic']
+        svc_status = Gauge('openstack_heat_service_status', 'OpenStack Orchestration Service status', status_labels, registry=self.registry)
+
+        def squashup(val):
+            if val == 'up':
+                return 0
+            return 1
+
+        for s in self.prodstack['heat_services']:
+            svc_status.labels(self.cloud, s['host'], s['binary'], s['status'], s['topic']).set(squashup(s['status']))
+
     def get_stats(self, cloud):
         log.debug("Loading heat gen stats")
         self.gen_heat_stats()
+        self.gen_service_status()
         return generate_latest(self.registry)
 
 
