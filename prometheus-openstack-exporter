@@ -404,7 +404,7 @@ class Cinder():
         svc_status = Gauge('openstack_volume_service_status', 'OpenStack Volume Service status', status_labels, registry=self.registry)
 
         def squashup(val):
-            if val:
+            if val == "up" or val == "enabled":
                 return 0
             return 1
 
