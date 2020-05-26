@@ -19,3 +19,4 @@ requests-oauthlib==1.2.0
 requests==2.22.0
 requestsexceptions==1.4.0
 swift==2.23.1
+python-heatclient==1.18.0
