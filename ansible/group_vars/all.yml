@@ -1,0 +1,45 @@
+
+# FirewallD Zone to apply firewall rules (if firewalld is enabled)
+firewalld_zone: public
+
+# os-client-config path (clouds.yaml) file
+cloud_config_file: "~/.config/openstack/clouds.yaml"
+
+openstack:
+  # Interval to collect metrics from OpenStack
+  cache_refresh_interval: 300
+
+  # Cache directory, this directory store files from each cloud with all metrics
+  cache_dir: "/var/log/openstack-node-exporter"
+
+  # Config directory to store clouds.yaml and openstack-exporter.yaml file
+  config_dir: "/etc/openstack-exporter/"
+
+  # Collectors enabled
+  enabled_collectors:
+    - cinder
+    - neutron
+    - nova
+    - heat
+
+  # Container name from docker hub
+  container_name:  marcosmamorim/openstack-node-exporter
+
+  # Container version
+  version: latest
+
+  # Container CPU cores
+  container_cpu_cores: 8
+
+  # Container CPU Memory in GB
+  container_memory: 8
+
+  # Container user ID
+  uid: 65534
+
+  # listen port
+  port: 9183
+
+  # Instance metadata to be collected
+  instance_metadata:
+    - os_linux

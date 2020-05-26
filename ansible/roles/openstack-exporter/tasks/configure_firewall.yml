@@ -1,0 +1,48 @@
+---
+
+- name: Check firewalld status
+  shell: "systemctl show firewalld | grep UnitFileState"
+  register: firewalld_status
+  failed_when: false
+  changed_when: false
+  tags:
+    - skip_ansible_lint
+
+- name: Open ports for OpenStack Node Exporter
+  firewalld:
+    state: enabled
+    permanent: true
+    immediate: true
+    zone: "{{ firewalld_zone }}"
+    rich_rule: rule family='ipv4' port port={{openstack.port }} protocol=tcp source address={{ item }} accept
+  loop:
+    - 0.0.0.0
+  when: "'enabled' in firewalld_status.stdout"
+
+- name: Check iptables status
+  shell: "systemctl show iptables | grep UnitFileState"
+  register: iptables_status
+  failed_when: false
+  changed_when: false
+  tags:
+    - skip_ansible_lint
+
+- when: "'enabled' in iptables_status.stdout"
+  block:
+  - name: Open ports for node_exporter
+    iptables:
+      chain: INPUT
+      protocol: tcp
+      destination_port: "{{ item }}"
+      jump: ACCEPT
+      action: insert
+      rule_num: 5
+    with_items:
+      - "{{ openstack.port }}"
+
+  - name: Insert Firewall rules
+    lineinfile:
+      path: /etc/sysconfig/iptables
+      line: '-A INPUT -p tcp -m multiport --dports {{ openstack.port }} -m state --state NEW -m comment --comment "Accept openstack-exporter from any ipv4" -j ACCEPT'
+      regex: '.*{{openstack.port}}.*'
+      insertafter: '.*dports 22 .*'

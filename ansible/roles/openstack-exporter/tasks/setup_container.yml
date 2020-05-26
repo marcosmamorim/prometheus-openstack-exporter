@@ -1,0 +1,53 @@
+---
+
+- name: Include docker
+  include_role:
+    name: docker
+    allow_duplicates: false
+  tags: docker
+
+- name: Create docker container
+  docker_container:
+    name: openstack-exporter
+    image: "{{ openstack.container_name }}:{{ openstack.version |default('latest') }}"
+    state: present
+    restart: true
+    restart_policy: no
+    published_ports: '{{ bind_host |default("0.0.0.0") }}:{{ openstack.port }}:{{ openstack.port }}'
+    detach: true
+    volumes:
+      - "{{ openstack.config_dir }}:/etc/openstack-exporter:Z"
+      - "{{ openstack.cache_dir }}:/var/log/openstack-exporter:Z"
+    networks:
+      - name: "{{ docker.network_name }}"
+    keep_volumes: true
+    pull: "{{ openstack.pull_image }}"
+    trust_image_content: "{{ openstack.trust_image_content }}"
+    cpu_period: "{{ openstack.container_cpu_period }}"
+    cpu_quota: "{{ openstack.container_cpu_period * openstack.container_cpu_cores }}"
+    memory: "{{ openstack.container_memory }}GB"
+    memory_swap: "{{ openstack.container_memory * 2 }}GB"
+    networks_cli_compatible: true
+    env:
+      OS_CLOUD_FILE: "{{ openstack.config_dir }}/clouds.yaml"
+
+- name: Ship systemd service
+  copy:
+    src: openstack-exporter.service
+    dest: "/etc/systemd/system/"
+    owner: root
+    group: root
+    mode: 0644
+  notify: Enable service
+
+- name: Enable and start openstack-exporter
+  systemd:
+    name: openstack-exporter
+    state: restarted
+    enabled: true
+    daemon_reload: true
+
+- name: Wait for openstack exporter to start
+  wait_for:
+    host: "{{ ansible_host }}"
+    port: "{{ openstack.port }}"

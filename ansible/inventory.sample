@@ -1,0 +1,2 @@
+[openstack_exporter]
+openstack-exporter ansible_host=<<IP_ADDRESS>> ansible_user=centos

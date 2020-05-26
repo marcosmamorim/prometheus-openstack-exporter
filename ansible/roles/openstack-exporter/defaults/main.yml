@@ -1,0 +1,27 @@
+---
+defaults:
+  openstack:
+    cache_refresh_interval: 300
+    cloud_name: mycloud
+    cache_dir: "/var/log/openstack-node-exporter"
+    config_dir: "/etc/openstack-exporter/"
+    openstack_allocation_ratio_vcpu: 1
+    openstack_allocation_ratio_ram: 1.0
+    openstack_allocation_ratio_disk: 1.0
+    log_level: INFO
+    enabled_collectors:
+      - cinder
+      - neutron
+      - nova
+      - heat
+    container_name:  marcosmamorim/openstack-node-exporter
+    version: latest
+    container_cpu_period: 100000
+    container_cpu_cores: 8
+    container_memory: 8
+    uid: 65534
+    pull_image: true
+    trust_image_content: false
+    port: 9183
+    instance_metadata:
+      - os_linux

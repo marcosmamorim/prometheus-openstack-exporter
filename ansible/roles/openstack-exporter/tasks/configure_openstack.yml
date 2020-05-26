@@ -1,0 +1,36 @@
+---
+
+- name: Create directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ openstack.uid }}"
+    recurse: true
+  with_items:
+    - "{{ openstack.config_dir }}"
+    - "{{ openstack.cache_dir }}"
+
+- name: Create node exporter config
+  template:
+    src: prometheus-openstack-exporter.yaml
+    dest: "{{ openstack.config_dir }}/openstack-exporter.yaml"
+    owner: "{{ openstack.uid }}"
+
+- name: import cloud vars
+  include_vars:
+    file: "{{ cloud_config_file }}"
+
+- name: Create clouds.yaml
+  template:
+    src: clouds.yaml.j2
+    dest: "{{ openstack.config_dir }}/clouds.yaml"
+    owner: "{{ openstack.uid }}"
+
+- name: Insert restart openstack-exporter cronjob
+  cron:
+    name: "restart openstack-exporter"
+    job: 'systemctl restart openstack-exporter'
+    hour: "6"
+    minute: "00"
+    user: root
+    cron_file: openstack-exporter

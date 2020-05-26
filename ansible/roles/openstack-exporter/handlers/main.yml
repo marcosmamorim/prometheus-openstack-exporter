@@ -1,0 +1,6 @@
+---
+- name: Enable service
+  systemd:
+    name: openstack-exporter
+    daemon_reload: true
+    enabled: true

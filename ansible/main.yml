@@ -1,0 +1,8 @@
+---
+
+- hosts: openstack_exporter
+  gather_facts: true
+  become: true
+
+  roles:
+    - openstack-exporter

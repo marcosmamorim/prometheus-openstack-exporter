@@ -1,0 +1,20 @@
+---
+  role_name: docker
+  author: Marcos Amorim
+  description: Install and configure docker and docker network to be used by openstack-exporter
+
+  license: license (GPLv2, CC-BY, etc)
+
+  min_ansible_version: 2.8
+
+   platforms:
+   - name: CentOS
+     versions:
+     - 7
+
+  galaxy_tags:
+    - prometheus-openstack-exporter
+    - openstack-exporter
+    - docker
+
+dependencies: []

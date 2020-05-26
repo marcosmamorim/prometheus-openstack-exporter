@@ -1,0 +1,31 @@
+listen_port: {{ openstack.port |d('9183') }}
+cache_refresh_interval: {{openstack.cache_refresh_interval |d('300')}}  # In seconds
+cache_file: {{ openstack.cache_dir }}/cloud
+log_level: {{ openstack.log_level }}
+config_dir: {{ openstack.config_dir }}
+
+enabled_collectors:
+  {{ openstack.enabled_collectors |to_nice_yaml(indent=2) | trim | indent(2)}}
+
+instance_metadata:
+  {{ openstack.instance_metadata |to_nice_yaml(indent=2) | trim | indent(2)}}
+
+schedulable_instance_size:
+  ram_mbs: 4096
+  vcpu: 2
+  disk_gbs: 20
+
+swift_hosts:
+  - host1.example.com
+  - host2.example.com
+
+keystone_tenants_map:
+
+reseller_prefix: AUTH_
+ring_path: /etc/swift
+hash_path_prefix:
+hash_path_suffix:
+
+openstack_allocation_ratio_vcpu: 2.5
+openstack_allocation_ratio_ram: 1.1
+openstack_allocation_ratio_disk: 1.0

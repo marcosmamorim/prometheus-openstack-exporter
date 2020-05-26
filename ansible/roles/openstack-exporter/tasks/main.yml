@@ -1,0 +1,17 @@
+---
+
+- include: merge_vars.yml
+  tags:
+    - always
+
+- include: configure_openstack.yml
+  tags:
+    - always
+
+- include: configure_firewall.yml
+  tags:
+    - firewall
+
+- include: setup_container.yml
+  tags:
+    - setup_container
