@@ -11,6 +11,7 @@ openstack_allocation_ratio_disk: VAR_DISK_RATIO # diskRatio=1.0
 log_level: DEBUG_LEVEL
 config_dir: /etc/prometheus
 
+query_limit: 200
 # Configure the enabled collectors here.  Note that the Swift account
 # collector in particular has special requirements.
 enabled_collectors: # enabledCollectors=cinder neutron nova

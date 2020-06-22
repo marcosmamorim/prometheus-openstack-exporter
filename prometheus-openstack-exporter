@@ -21,8 +21,9 @@ See the GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
+# TODO:
+# Add hostname to instance information
 
-# TODO: Remove config['cache_file'] and use config['cache_dir'] instead
 
 import argparse
 import yaml
@@ -93,64 +94,116 @@ class DataGatherer(Thread):
         Thread.__init__(self)
         self.daemon = True
         self.duration = 0
+        self.prodstack = {}
         self.refresh_interval = config.get('cache_refresh_interval', 900)
         self.cloud = cloud
-        self.cache_file = config['cache_file'] + '-' + self.cloud
+        self.query_limit = int(config.get('query_limit', 200))
+        self.metrics_disabled = config.get('metrics_disabled', ['quota'])
+        self.cache_file = config['cache_file']+'-'+self.cloud+'.json'
         self.use_nova_volumes = config.get('use_nova_volumes', True)
+        self.service_response = {}
 
     def _get_keystone_info(self, conn):
-        log.debug("_get_keystone_info")
+        log.info("Starting collect keystone metrics for cloud '{}'".format(self.cloud))
+        start_time = time()
         info = {}
         info['tenants'] = [dict(x) for x in conn.identity.projects()]
+        self.service_response.update({'keystone': time() - start_time})
         return info
 
     def _get_heat_info(self, conn, heat):
+        log.info("Starting collect heat metrics for cloud '{}'".format(self.cloud))
+        start_time = time()
         info = {}
         info['stacks'] = [dict(x) for x in conn.list_stacks()]
         info['heat_services'] = [dict(x.to_dict()) for x in heat.services.list()]
+        self.service_response.update({'heat': time() - start_time})
         return info
 
     def _get_neutron_info(self, conn):
+        log.info("Starting collect neutron metrics for cloud '{}'".format(self.cloud))
+        start_time = time()
         info = {}
+        log.info("Starting collect floating IP metrics for cloud '{}'".format(self.cloud))
         info['floatingips'] = [dict(ip) for ip in conn.network.ips()]
+
+        log.info("Starting collect networks metrics for cloud '{}'".format(self.cloud))
         info['networks'] = [dict(network) for network in conn.network.networks()]
+
+        log.info("Starting collect network ports metrics for cloud '{}'".format(self.cloud))
         info['ports'] = [dict(port) for port in conn.network.ports()]
+
+        log.info("Starting collect routers metrics for cloud '{}'".format(self.cloud))
         info['routers'] = [dict(router) for router in conn.network.routers()]
+
+        log.info("Starting collect subnets metrics for cloud '{}'".format(self.cloud))
         info['subnets'] = [dict(subnet) for subnet in conn.network.subnets()]
+
+        log.info("Starting collect network services metrics for cloud '{}'".format(self.cloud))
         info['network_services'] = [dict(service) for service in conn.network.agents()]
+        self.service_response.update({'neutron': time() - start_time})
         return info
 
     def _get_metadata_info(self, prodstack):
-        m_labels = config.get('instance_metadata', ['project', 'course_name', 'env_type', 'platform', 'Purpose', 'Project', 'catalog_item'])
+        log.info("Starting collect instance metadata metrics for cloud '{}'".format(self.cloud))
+        start_time = time()
         info = {}
+        m_labels = config.get('instance_metadata', ['project', 'course_name', 'env_type', 'platform', 'Purpose', 'Project', 'catalog_item'])
         info['metadata'] = {}
-        for i in prodstack['instances']:
-            t_id = i['project_id']
-            meta = dict(i['metadata'])
-            info['metadata'][t_id] = {}
-            for label in m_labels:
-                # if label metadata not found set label to untagged
-                if label in meta:
-                    info['metadata'][t_id][label] = meta[label]
-                else:
-                    info['metadata'][t_id][label] = 'untagged'
+        try:
+            for i in prodstack['instances']:
+                t_id = i['project_id']
+                meta = dict(i['metadata'])
+                info['metadata'][t_id] = {}
+                for label in m_labels:
+                    # if label metadata not found set label to untagged
+                    if label in meta:
+                        info['metadata'][t_id][label] = meta[label]
+                    else:
+                        info['metadata'][t_id][label] = 'untagged'
+        except Exception as e:
+            pass
+        self.service_response.update({'nova_metadata': time() - start_time})
         return info
 
     def _get_nova_info(self, conn, prodstack, nova, cinder, neutron, cinder_rest):
+        log.info("Starting collect nova metrics for cloud '{}'".format(self.cloud))
         info = {}
+
+        start_time = time()
+        log.info("Starting collect hypervisors metrics for cloud '{}'".format(self.cloud))
         info['hypervisors'] = [dict(hypervisor) for hypervisor in conn.list_hypervisors()]
+        self.service_response.update({'hypervisors': time() - start_time})
+
+        start_time = time()
+        log.info("Starting collect compute services metrics for cloud '{}'".format(self.cloud))
         info['services'] = [dict(service) for service in conn.compute.services()]
         r_volume_services = cinder_rest.get('/os-services')
-        info['volume_services'] = r_volume_services.json()['services']
-        info['flavors'] = [dict(flavor) for flavor in conn.list_flavors()]
-        info['aggregates'] = [dict(aggregate) for aggregate in conn.list_aggregates()]
+        self.service_response.update({'compute_services': time() - start_time})
 
+        start_time = time()
+        log.info("Starting collect volume services metrics for cloud '{}'".format(self.cloud))
+        info['volume_services'] = r_volume_services.json()['services']
+        self.service_response.update({'volume_services': time() - start_time})
+
+        start_time = time()
+        log.info("Starting collect flavors metrics for cloud '{}'".format(self.cloud))
+        info['flavors'] = [dict(flavor) for flavor in conn.list_flavors()]
+        self.service_response.update({'flavors': time() - start_time})
+
+        start_time = time()
+        log.info("Starting collect compute aggregates metrics for cloud '{}'".format(self.cloud))
+        info['aggregates'] = [dict(aggregate) for aggregate in conn.list_aggregates()]
+        self.service_response.update({'aggregates': time() - start_time})
+
+        start_time = time()
         info['instances'] = []
         valid_statuses = ['ACTIVE', 'ERROR', 'SHELVED_OFFLOADED', 'SHUTOFF', 'SUSPENDED', 'VERIFY_RESIZE']
+        log.info("Starting collect instances metrics for cloud '{}'".format(self.cloud))
         for status in valid_statuses:
             marker = ''
             while True:
-                search_opts = {'limit': '100', 'marker': marker, 'status': status}
+                search_opts = {'limit': self.query_limit, 'marker': marker, 'status': status}
                 # search_opts = {'status': status}
                 new_instances = [dict(instance) for instance in conn.list_servers(detailed=True, all_projects=True, bare=True, filters=search_opts)]
                 if new_instances:
@@ -158,23 +211,30 @@ class DataGatherer(Thread):
                     info['instances'].extend(new_instances)
                 else:
                     break
+
+        self.service_response.update({'instances': time() - start_time})
+
+        start_time = time()
         info['volume_quotas'] = {}
         info['nova_quotas'] = {}
-        for t in prodstack['tenants']:
-            tid = t['id']
-            if self.use_nova_volumes:
-                info['volume_quotas'][tid] = cinder.quotas.get(tid, usage=True)._info
-            # old OS versions (e.g. Mitaka) will 404 if we request details
-            try:
-                info['nova_quotas'][tid] = nova.quotas.get(tid, detail=True)._info
-            except Exception:
-                info['nova_quotas'][tid] = nova.quotas.get(tid)._info
+        log.info("Starting collect volume quotas metrics for cloud '{}'".format(self.cloud))
+        if 'quotas' not in self.metrics_disabled:
+            for t in prodstack['tenants']:
+                tid = t['id']
+                if self.use_nova_volumes:
+                    info['volume_quotas'][tid] = cinder.quotas.get(tid, usage=True)._info
+                # old OS versions (e.g. Mitaka) will 404 if we request details
+                try:
+                    info['nova_quotas'][tid] = nova.quotas.get(tid, detail=True)._info
+                except Exception:
+                    info['nova_quotas'][tid] = nova.quotas.get(tid)._info
+        self.service_response.update({'quotas': time() - start_time})
         return info
 
     def run(self):
         log.debug("Starting data gather thread for %s" % self.cloud)
         prodstack = {}
-        self.cache_file = config['cache_file'] + "-" + self.cloud
+        self.cache_file = config['cache_file']+'-'+self.cloud+'.json'
 
         base_dir = os.path.dirname(self.cache_file)
         if not os.path.exists(base_dir):
@@ -190,25 +250,30 @@ class DataGatherer(Thread):
                 if conn is not None:
                     prodstack.update(self._get_keystone_info(conn))
                     prodstack.update(self._get_neutron_info(conn))
-                    log.debug("Starting collect heat stack metrics")
                     prodstack.update(self._get_heat_info(conn, heat))
                     if nova is not None and cinder is not None and neutron is not None:
+                        log.debug("Starting collect Nova metrics")
                         prodstack.update(self._get_nova_info(conn, prodstack, nova, cinder, neutron, cinder_rest))
+                        # log.debug("Starting collect instance metrics")
                         prodstack.update(self._get_metadata_info(prodstack))
                     else:
                         log.error("Error connecting Nova: {0}, Cinder: {1}, Neutron: {2}".format(nova, cinder,
                                                                                                  neutron))
+                self.prodstack = prodstack
             except Exception as e:
                 log.error("Error getting stats: {}".format(e))
+                continue
             else:
-                with open(self.cache_file + '.new', "wb+") as f:
-                    pickle.dump((prodstack, ), f, pickle.HIGHEST_PROTOCOL)
+                with open(self.cache_file + '.new', "w") as f:
+                    json.dump(prodstack,  f)
                 rename(self.cache_file + '.new', self.cache_file)
-                log.debug("Done dumping stats to {}".format(self.cache_file))
+                log.info("Done dumping stats to {}".format(self.cache_file))
             self.duration = time() - start_time
             sleep(self.refresh_interval)
 
-    def get_stats(self):
+    def get_stats(self, prodstack):
+        self.cache_file = config['cache_file']+'-'+self.cloud+'.json'
+        self.prodstack = prodstack
         registry = CollectorRegistry()
         labels = ['cloud']
         age = Gauge('openstack_exporter_cache_age_seconds',
@@ -221,24 +286,23 @@ class DataGatherer(Thread):
                          'Cache refresh duration in seconds.',
                          labels, registry=registry)
         duration.labels(*label_values).set(self.duration)
+
+        services = Gauge('openstack_service_duration_seconds',
+                         'Time in seconds to collect the metrics.',
+                         ['cloud', 'service' ], registry=registry)
+
+        for k in self.service_response:
+            services.labels(self.cloud, k).set(self.service_response[k])
+
         return generate_latest(registry)
 
 
 class Neutron():
     def __init__(self, cloud):
         self.registry = CollectorRegistry()
-        self.prodstack = {}
         self.cloud = cloud
-        with open(config['cache_file']+'-'+self.cloud, 'rb') as f:
-            self.prodstack = pickle.load(f)[0]
-
-        self.tenant_map = {t['id']: t['name'] for t in self.prodstack['tenants']}
-        self.network_map = {n['id']: n['name'] for n in self.prodstack['networks']}
-        self.subnet_map = {
-            n['id']: {'name': n['name'], 'pool': n['allocation_pools']} for n in self.prodstack['subnets']}
-        self.routers = self.prodstack['routers']
-        self.ports = self.prodstack['ports']
-        self.floating_ips = self.prodstack['floatingips']
+        self.cache_file = config['cache_file']+'-'+self.cloud+'.json'
+        log.debug("Get stats from cloud %s" % self.cloud)
 
     def _get_router_ip(self, uuid):
         owner = "network:router_gateway"
@@ -331,9 +395,22 @@ class Neutron():
             svc_status.labels(self.cloud, host, s['binary'], s['is_alive']).set(squashup(s['is_alive']))
 
 
-    def get_stats(self, cloud):
+    def get_stats(self, cloud, prodstack):
+        log.info("Creating Neutron metrics for {}".format(cloud))
+        self.cloud = cloud
+        self.cache_file = config['cache_file']+'-'+self.cloud+'.json'
+        self.prodstack = prodstack
+
         labels = ['cloud', 'subnet_name', 'tenant', 'ip_type', 'ip_status']
         self.cloud = cloud
+        self.tenant_map = {t['id']: t['name'] for t in self.prodstack['tenants']}
+        self.network_map = {n['id']: n['name'] for n in self.prodstack['networks']}
+        self.subnet_map = {
+            n['id']: {'name': n['name'], 'pool': n['allocation_pools']} for n in self.prodstack['subnets']}
+        self.routers = self.prodstack['routers']
+        self.ports = self.prodstack['ports']
+        self.floating_ips = self.prodstack['floatingips']
+
         ips = self.get_floating_ips()
         ips.update(self.get_router_ips())
         self.gen_port_stats()
@@ -353,11 +430,8 @@ class Cinder():
         self.registry = CollectorRegistry()
         self.prodstack = {}
         self.cloud = cloud
+        self.cache_file = config['cache_file']+'-'+self.cloud+'.json'
         log.debug("Get stats from cloud %s" % self.cloud)
-        with open(config['cache_file']+'-'+self.cloud, 'rb') as f:
-            self.prodstack = pickle.load(f)[0]
-        self.tenant_map = {t['id']: t['name'] for t in self.prodstack['tenants']}
-        self.use_nova_volumes = config.get('use_nova_volumes', True)
 
     def gen_volume_quota_stats(self):
         # TODO: Modify here to create a single metric for all returned limits and use labels for each metric
@@ -413,8 +487,12 @@ class Cinder():
             svc_state.labels(self.cloud, host, s['binary'], s['state'], s['zone']).set(squashup(s['state']))
             svc_status.labels(self.cloud, host, s['binary'], s['status'], s['zone']).set(squashup(s['status']))
 
+    def get_stats(self, cloud, prodstack):
+        log.info("Creating Cinder metrics for {}".format(cloud))
+        self.prodstack = prodstack
+        self.tenant_map = {t['id']: t['name'] for t in self.prodstack['tenants']}
+        self.use_nova_volumes = config.get('use_nova_volumes', True)
 
-    def get_stats(self, cloud):
         self.gen_volume_quota_stats()
         self.gen_service_status()
         return generate_latest(self.registry)
@@ -425,19 +503,17 @@ class Heat():
         self.registry = CollectorRegistry()
         self.prodstack = {}
         self.cloud = cloud
+        self.cache_file = config['cache_file']+'-'+self.cloud+'.json'
         log.debug("Get stats from cloud %s" % self.cloud)
-        with open(config['cache_file']+'-'+self.cloud, 'rb') as f:
-            self.prodstack = pickle.load(f)[0]
-        log.debug(json.dumps(self.prodstack, indent=2))
-        # self.tenant_map = {t['id']: t['name'] for t in self.prodstack['tenants']}
 
     def gen_heat_stats(self):
         stack = Gauge('openstack_heat_stack_count',
                     'Heat Stack details',
                     ['cloud', 'project', 'id', 'status', 'action', 'stack_name'], registry=self.registry)
 
-        for t in self.prodstack['stacks']:
-            stack.labels(self.cloud, t['properties']['project'], t['id'], t['status'], t['action'], t['name']).inc(1)
+        if 'stacks' in self.prodstack:
+            for t in self.prodstack['stacks']:
+                stack.labels(self.cloud, t['properties']['project'], t['id'], t['status'], t['action'], t['name']).inc(1)
 
     def gen_service_status(self):
         status_labels = ['cloud', 'hostname', 'service', 'status', 'topic']
@@ -448,11 +524,13 @@ class Heat():
                 return 0
             return 1
 
-        for s in self.prodstack['heat_services']:
-            svc_status.labels(self.cloud, s['host'], s['binary'], s['status'], s['topic']).set(squashup(s['status']))
+        if 'heat_services' in self.prodstack:
+            for s in self.prodstack['heat_services']:
+                svc_status.labels(self.cloud, s['host'], s['binary'], s['status'], s['topic']).set(squashup(s['status']))
 
-    def get_stats(self, cloud):
-        log.debug("Loading heat gen stats")
+    def get_stats(self, cloud, prodstack):
+        log.info("Creating Heat metrics for {0}".format(cloud))
+        self.prodstack = prodstack
         self.gen_heat_stats()
         self.gen_service_status()
         return generate_latest(self.registry)
@@ -463,20 +541,8 @@ class Nova():
         self.registry = CollectorRegistry()
         self.prodstack = {}
         self.cloud = cloud
-        with open(config['cache_file']+'-'+self.cloud, 'rb') as f:
-            self.prodstack = pickle.load(f)[0]
-
-        self.hypervisors = self.prodstack['hypervisors']
-        self.tenant_map = {t['id']: t['name'] for t in self.prodstack['tenants']}
-        self.flavor_map = {f['id']: {'ram': f['ram'], 'disk': f['disk'], 'vcpus': f['vcpus']}
-                           for f in self.prodstack['flavors']}
-        self.aggregate_map = {}
-        self.services_map = {}
-        for s in self.prodstack['services']:
-            if s['binary'] == 'nova-compute':
-                self.services_map[s['host']] = s['status']
-        for agg in self.prodstack['aggregates']:
-            self.aggregate_map.update({i: agg['name'] for i in agg['hosts']})
+        self.cache_file = config['cache_file']+'-'+self.cloud+'.json'
+        log.debug("Get stats from cloud %s" % self.cloud)
 
     def _get_schedulable_instances(self, host):
         free_vcpus = host['vcpus'] * config['openstack_allocation_ratio_vcpu'] - host['vcpus_used']
@@ -556,7 +622,10 @@ class Nova():
         for p, k in self.prodstack['metadata'].items():
             g_values = [self.cloud]
             for label in m_labels:
-                g_values.append(k[label])
+                if label not in k:
+                    g_values.append('uknown')
+                else:
+                    g_values.append(k[label])
             i_meta.labels(*g_values).inc(1)
 
     def gen_instance_stats(self):
@@ -653,9 +722,21 @@ class Nova():
                     secr.labels(self.cloud, tenant, tt).inc(q['security_group_rules'][tt])
                     key.labels(self.cloud, tenant, tt).inc(q['key_pairs'][tt])
 
-    def get_stats(self, cloud):
-        log.debug("get_stats")
-        self.cloud = cloud
+    def get_stats(self, cloud, prodstack):
+        log.info("Creating Nova metrics for {}".format(cloud))
+        self.prodstack = prodstack
+        self.hypervisors = self.prodstack['hypervisors']
+        self.tenant_map = {t['id']: t['name'] for t in self.prodstack['tenants']}
+        self.flavor_map = {f['id']: {'ram': f['ram'], 'disk': f['disk'], 'vcpus': f['vcpus']}
+                           for f in self.prodstack['flavors']}
+        self.aggregate_map = {}
+        self.services_map = {}
+        for s in self.prodstack['services']:
+            if s['binary'] == 'nova-compute':
+                self.services_map[s['host']] = s['status']
+        for agg in self.prodstack['aggregates']:
+            self.aggregate_map.update({i: agg['name'] for i in agg['hosts']})
+
         self.gen_service_status()
         self.gen_hypervisor_stats()
         self.gen_instance_stats()
@@ -749,7 +830,8 @@ class Swift():
             for ring in ['account', 'container']:
                 self._get_ring_replication_stats(ring, h, swift_repl_duration, swift_repl)
 
-    def get_stats(self):
+    def get_stats(self, cloud):
+        log.info("Creating Swift metrics for {}".format(cloud))
         self.gen_up_stats()
         self.gen_disk_usage_stats()
         self.gen_quarantine_stats()
@@ -825,7 +907,8 @@ class SwiftAccountUsage():
 
             swift_account.labels(self.cloud, account, tenant_name).set(bytes_used)
 
-    def get_stats(self):
+    def get_stats(self, cloud):
+        log.info("Creating Swift Account metrics for {}".format(cloud))
         self.gen_account_stats()
         return generate_latest(self.registry)
 
@@ -869,6 +952,15 @@ class OpenstackExporterHandler(BaseHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         BaseHTTPRequestHandler.__init__(self, *args, **kwargs)
 
+    def _read_file(self, cache_file):
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                log.error("Error opening {0} as {1}".format(cache_file, e))
+        return None
+
     def do_GET(self):
         url = urlparse.urlparse(self.path)
         if url.path == '/metrics':
@@ -877,20 +969,22 @@ class OpenstackExporterHandler(BaseHTTPRequestHandler):
                 clouds = get_clouds(config['config_dir'])
                 collectors = {}
                 output = ''
-                for cloud in clouds:
-                    if not path.isfile(config['cache_file']+'-'+cloud):
-                        continue
-                    collectors[cloud] = [COLLECTORS[collector](cloud) for collector in get_collectors(config.get('enabled_collectors'))]
-                    log.debug("Collecting stats..")
-                    for collector in collectors[cloud]:
-                        output += collector.get_stats(cloud)
-                    if data_gatherer:
-                        output += data_gatherer[cloud].get_stats()
-
                 self.send_response(200)
                 self.send_header('Content-Type', CONTENT_TYPE_LATEST)
                 self.end_headers()
-                self.wfile.write(output)
+
+                for cloud in clouds:
+                    cache_file = config['cache_file'] + '-' + cloud + '.json'
+                    if not path.isfile(cache_file):
+                        continue
+                    prodstack = self._read_file(cache_file)
+                    collectors[cloud] = [COLLECTORS[collector](cloud) for collector in get_collectors(config.get('enabled_collectors'))]
+                    log.debug("Collecting stats {}..".format(cloud))
+                    for collector in collectors[cloud]:
+                        self.wfile.write(collector.get_stats(cloud,prodstack))
+                    if data_gatherer:
+                        self.wfile.write(data_gatherer[cloud].get_stats(prodstack))
+
             except Exception:
                 self.send_response(500)
                 self.end_headers()
